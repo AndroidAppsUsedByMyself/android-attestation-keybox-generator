@@ -164,7 +164,6 @@ func CertificateToPEM(cert *x509.Certificate) (string, error) {
 
 // GenerateSubordinateCertificate 生成下一级证书及密钥（以 ECDSA 为例）
 // parentCert 与 parentKey 为签发者信息，subject 为证书主题
-// TODO: fixme
 func GenerateSubordinateCertificate(parentCert *x509.Certificate, parentKey interface{}, subject string) (certPEM string, keyPEM string, err error) {
 	newKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -401,8 +400,8 @@ func main() {
 			for i, kb := range attestation.Keyboxes {
 				for j, key := range kb.Keys {
 					if key.CertificateChain != nil && len(key.CertificateChain.Certificates) > 0 {
-						// 取当前 Key 的证书链中最后一个证书作为父证书
-						parentCertPEM := key.CertificateChain.Certificates[len(key.CertificateChain.Certificates)-1].Value
+						// 取当前 Key 的证书链中第一个证书作为父证书
+						parentCertPEM := key.CertificateChain.Certificates[0].Value
 						parentCert, err := ParseCertificate(parentCertPEM)
 						if err != nil {
 							fmt.Printf("Keybox %d Key %d: 解析父证书失败: %v\n", i, j, err)
@@ -413,24 +412,18 @@ func main() {
 							fmt.Printf("Keybox %d Key %d: 解析私钥失败: %v\n", i, j, err)
 							continue
 						}
-						// 错误的做法：
-						// 如果导入/生成了 CA，则优先使用 CA 签发
 						signerCert := parentCert
 						signerKey := parentKey
-						// if caCert != nil && caKey != nil {
-						// 	signerCert = caCert
-						// 	signerKey = caKey
-						// }
 						newCertPEM, newKeyPEM, err := GenerateSubordinateCertificate(signerCert, signerKey, kb.DeviceID)
 						if err != nil {
 							fmt.Printf("Keybox %d Key %d: 生成下一级证书失败: %v\n", i, j, err)
 							continue
 						}
 						// 将新生成的证书追加到证书链中，并更新私钥
-						key.CertificateChain.Certificates = append(key.CertificateChain.Certificates, PEMBlock{
+						key.CertificateChain.Certificates = append([]PEMBlock{{
 							Format: "pem",
 							Value:  newCertPEM,
-						})
+						}}, key.CertificateChain.Certificates...)
 						key.CertificateChain.NumberOfCertificates = len(key.CertificateChain.Certificates)
 						key.PrivateKey.Value = newKeyPEM
 						attestation.Keyboxes[i].Keys[j] = key
