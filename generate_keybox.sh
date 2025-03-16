@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 DEVICE_ID="Device-$(openssl rand -hex 8)"
 TITLE="TEE"
