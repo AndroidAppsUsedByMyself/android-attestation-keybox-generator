@@ -248,6 +248,83 @@ func GenerateSelfSignedCACertificate(subject string) (certPEM string, keyPEM str
 	return string(certBlock), string(keyBlock), caCert, caKeyECDSA, nil
 }
 
+// ----------------------- 证书链验证 -----------------------
+
+// VerifyCertificateChain 验证证书链的完整性和有效性
+func VerifyCertificateChain(certPEMs []string) error {
+	certs := make([]*x509.Certificate, len(certPEMs))
+	for i, pemStr := range certPEMs {
+		cert, err := ParseCertificate(pemStr)
+		if err != nil {
+			return fmt.Errorf("解析证书 %d 失败: %v", i, err)
+		}
+		certs[i] = cert
+	}
+
+	brokenLinks := 0
+	for i := 0; i < len(certs)-1; i++ {
+		cert := certs[i]
+		issuerCert := certs[i+1]
+
+		fmt.Printf("验证证书 %d:\n", i)
+		fmt.Printf("  主题 (Subject): %s\n", cert.Subject.CommonName)
+		fmt.Printf("  颁发者 (Issuer): %s\n", cert.Issuer.CommonName)
+		fmt.Printf("验证证书 %d:\n", i+1)
+		fmt.Printf("  主题 (Subject): %s\n", issuerCert.Subject.CommonName)
+		fmt.Printf("  颁发者 (Issuer): %s\n", issuerCert.Issuer.CommonName)
+
+		if cert.Issuer.CommonName != issuerCert.Subject.CommonName {
+			fmt.Printf("[破坏] 证书 %d 颁发者与证书 %d 主题不匹配\n", i, i+1)
+			brokenLinks++
+			continue
+		}
+
+		err := cert.CheckSignatureFrom(issuerCert)
+		if err != nil {
+			fmt.Printf("[破坏] 证书 %d 无法由证书 %d 验证: %v\n", i, i+1, err)
+			brokenLinks++
+		} else {
+			fmt.Printf("[成功] 证书 %d 由证书 %d 成功验证\n", i, i+1)
+		}
+	}
+
+	if brokenLinks > 0 {
+		return fmt.Errorf("证书链中发现 %d 处破坏", brokenLinks)
+	}
+
+	fmt.Println("证书链验证成功")
+	return nil
+}
+
+// VerifyKeyCertificatePair 验证证书和私钥是否匹配
+func VerifyKeyCertificatePair(certPEM, privateKeyPEM string) error {
+	cert, err := ParseCertificate(certPEM)
+	if err != nil {
+		return fmt.Errorf("解析证书失败: %v", err)
+	}
+
+	privateKey, err := ParsePrivateKey(privateKeyPEM)
+	if err != nil {
+		return fmt.Errorf("解析私钥失败: %v", err)
+	}
+
+	switch key := privateKey.(type) {
+	case *ecdsa.PrivateKey:
+		if !key.PublicKey.Equal(cert.PublicKey) {
+			return errors.New("证书的公钥与提供的私钥不匹配")
+		}
+	case *rsa.PrivateKey:
+		if !key.PublicKey.Equal(cert.PublicKey) {
+			return errors.New("证书的公钥与提供的私钥不匹配")
+		}
+	default:
+		return errors.New("不支持的私钥类型")
+	}
+
+	fmt.Println("[成功] 证书和密钥匹配")
+	return nil
+}
+
 // ----------------------- 菜单操作与主流程 -----------------------
 
 var (
@@ -267,6 +344,7 @@ func main() {
 		fmt.Println("4. 生成下一级证书+密钥 (可重复执行)")
 		fmt.Println("5. 查看当前 Attestation 信息")
 		fmt.Println("6. 保存到 keybox.xml 并退出")
+		fmt.Println("7. 验证证书链和密钥对")
 		fmt.Print("请输入选项：")
 		choice, _ := reader.ReadString('\n')
 		choice = strings.TrimSpace(choice)
@@ -312,8 +390,6 @@ func main() {
 			}
 			caCert = caCertParsed
 			caKey = caKeyParsed
-			fmt.Println("成功导入 CA 证书及私钥")
-			fmt.Print("请输入主题（CommonName）：")
 			keyPEM, err := PrivateKeyToPEM(caKey)
 			if err != nil {
 				fmt.Println("转换 CA 密钥为 PEM 失败：", err)
@@ -324,12 +400,11 @@ func main() {
 				fmt.Println("转换 CA 证书/密钥为 PEM 失败：", err)
 				break
 			}
-			subject, _ := reader.ReadString('\n')
-			subject = strings.TrimSpace(subject)
+			fmt.Println("成功导入 CA 证书及私钥")
 			attestation = &AndroidAttestation{
 				Keyboxes: []Keybox{
 					{
-						DeviceID: subject,
+						DeviceID: "",
 						Keys: []Key{
 							{
 								Algorithm: "ecdsa",
@@ -353,7 +428,7 @@ func main() {
 			}
 			fmt.Println("构造新的 Attestation 成功")
 		case "3":
-			fmt.Print("请输入 CA 证书主题（CommonName）：")
+			fmt.Print("请输入 Subject:")
 			subject, _ := reader.ReadString('\n')
 			subject = strings.TrimSpace(subject)
 			certPEM, keyPEM, newCACert, newCAKey, err := GenerateSelfSignedCACertificate(subject)
@@ -368,7 +443,7 @@ func main() {
 			attestation = &AndroidAttestation{
 				Keyboxes: []Keybox{
 					{
-						DeviceID: subject,
+						DeviceID: "",
 						Keys: []Key{
 							{
 								Algorithm: "ecdsa",
@@ -414,7 +489,10 @@ func main() {
 						}
 						signerCert := parentCert
 						signerKey := parentKey
-						newCertPEM, newKeyPEM, err := GenerateSubordinateCertificate(signerCert, signerKey, kb.DeviceID)
+						fmt.Print("请输入 Subject:")
+						subject, _ := reader.ReadString('\n')
+						subject = strings.TrimSpace(subject)
+						newCertPEM, newKeyPEM, err := GenerateSubordinateCertificate(signerCert, signerKey, subject)
 						if err != nil {
 							fmt.Printf("Keybox %d Key %d: 生成下一级证书失败: %v\n", i, j, err)
 							continue
@@ -449,6 +527,14 @@ func main() {
 				fmt.Println("无 Attestation 数据可保存")
 				os.Exit(1)
 			}
+			for i, kb := range attestation.Keyboxes {
+				if kb.DeviceID == "" {
+					fmt.Printf("Keybox %d: DeviceID 为空，请输入 DeviceID:\n", i)
+					deviceID, _ := reader.ReadString('\n')
+					deviceID = strings.TrimSpace(deviceID)
+					attestation.Keyboxes[i].DeviceID = deviceID
+				}
+			}
 			err := attestation.SaveToFile(outfile)
 			if err != nil {
 				fmt.Println("保存 XML 失败：", err)
@@ -456,6 +542,31 @@ func main() {
 				fmt.Println("成功保存到", outfile)
 			}
 			os.Exit(0)
+		case "7":
+			if attestation == nil {
+				fmt.Println("请先加载/生成 Attestation 数据！")
+				break
+			}
+			for _, kb := range attestation.Keyboxes {
+				for _, key := range kb.Keys {
+					if key.CertificateChain != nil && len(key.CertificateChain.Certificates) > 0 {
+						certPEMs := make([]string, len(key.CertificateChain.Certificates))
+						for i, cert := range key.CertificateChain.Certificates {
+							certPEMs[i] = cert.Value
+						}
+						err := VerifyCertificateChain(certPEMs)
+						if err != nil {
+							fmt.Printf("验证证书链失败: %v\n", err)
+						}
+						if key.PrivateKey.Value != "" {
+							err := VerifyKeyCertificatePair(certPEMs[0], key.PrivateKey.Value)
+							if err != nil {
+								fmt.Printf("验证密钥对失败: %v\n", err)
+							}
+						}
+					}
+				}
+			}
 		default:
 			fmt.Println("无效选项，请重新输入")
 		}
