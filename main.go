@@ -160,6 +160,17 @@ func CertificateToPEM(cert *x509.Certificate) (string, error) {
 // ----------------------- 证书生成函数 -----------------------
 // parentCert 与 parentKey 为签发者信息，subject 为证书主题
 
+func GenerateSubordinateCertificate(parentCert *x509.Certificate, parentKey interface{}, subject string, algo string) (string, string, error) {
+	switch strings.ToLower(algo) {
+	case "ecdsa":
+		return GenerateSubordinateCertificateECDSA(parentCert, parentKey, subject)
+	case "rsa":
+		return GenerateSubordinateCertificateRSA(parentCert, parentKey, subject)
+	default:
+		return "", "", errors.New("不支持的算法")
+	}
+}
+
 // GenerateSubordinateCertificateECDSA 生成下一级证书及密钥，ECDSA版本
 func GenerateSubordinateCertificateECDSA(parentCert *x509.Certificate, parentKey interface{}, subject string) (string, string, error) {
 	newKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -578,11 +589,11 @@ func (app *App) generateSubCert() {
 			}
 			subAlg = strings.ToLower(subAlg)
 			var newCertPEM, newKeyPEM string
-			if subAlg == "rsa" {
-				newCertPEM, newKeyPEM, err = GenerateSubordinateCertificateRSA(parentCert, parentKey, subject)
-			} else {
-				newCertPEM, newKeyPEM, err = GenerateSubordinateCertificateECDSA(parentCert, parentKey, subject)
+			if subAlg == "" {
+				newCertPEM, newKeyPEM, err = GenerateSubordinateCertificate(parentCert, parentKey, subject, "ecdsa")
 				subAlg = "ecdsa"
+			} else {
+				newCertPEM, newKeyPEM, err = GenerateSubordinateCertificate(parentCert, parentKey, subject, subAlg)
 			}
 			if err != nil {
 				fmt.Printf("Keybox %d Key %d: 生成下一级证书失败: %v\n", kbIndex, keyIndex, err)
