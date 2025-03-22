@@ -11,6 +11,7 @@ import (
 	"encoding/pem"
 	"encoding/xml"
 	"errors"
+	"flag"
 	"fmt"
 	"math/big"
 	"os"
@@ -52,24 +53,8 @@ type CertificateChain struct {
 	Certificates         []PEMBlock `xml:"Certificate"`
 }
 
-// ----------------------- XML 解析与反解析 -----------------------
+// ----------------------- XML 解析与反解析方法 -----------------------
 
-// LoadAttestationFromFile 通过 keybox.xml 文件加载 Attestation 数据
-func LoadAttestationFromFile(filename string) (*AndroidAttestation, error) {
-	data, err := os.ReadFile(filename)
-	if err != nil {
-		return nil, err
-	}
-	var att AndroidAttestation
-	err = xml.Unmarshal(data, &att)
-	if err != nil {
-		return nil, err
-	}
-	att.NumberOfKeyboxes = len(att.Keyboxes)
-	return &att, nil
-}
-
-// SaveToFile 将 Attestation 数据反解析为 XML 文件保存
 func (a *AndroidAttestation) SaveToFile(filename string) error {
 	a.NumberOfKeyboxes = len(a.Keyboxes)
 	data, err := xml.MarshalIndent(a, "", "  ")
@@ -78,6 +63,19 @@ func (a *AndroidAttestation) SaveToFile(filename string) error {
 	}
 	data = append([]byte(xml.Header), data...)
 	return os.WriteFile(filename, data, 0644)
+}
+
+func LoadAttestationFromFile(filename string) (*AndroidAttestation, error) {
+	data, err := os.ReadFile(filename)
+	if err != nil {
+		return nil, err
+	}
+	var att AndroidAttestation
+	if err = xml.Unmarshal(data, &att); err != nil {
+		return nil, err
+	}
+	att.NumberOfKeyboxes = len(att.Keyboxes)
+	return &att, nil
 }
 
 // ----------------------- 辅助函数 -----------------------
@@ -91,9 +89,17 @@ func cleanupPEM(pemStr string) string {
 	return strings.Join(lines, "\n")
 }
 
-// ----------------------- PEM 与证书/密钥处理 -----------------------
+func readLine(prompt string, reader *bufio.Reader) (string, error) {
+	fmt.Print(prompt)
+	text, err := reader.ReadString('\n')
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(text), nil
+}
 
-// ParsePrivateKey 解析 PEM 格式的私钥（支持 ECDSA、RSA、PKCS8）
+// ----------------------- PEM 与证书/密钥处理函数 -----------------------
+
 func ParsePrivateKey(pemStr string) (interface{}, error) {
 	pemStr = cleanupPEM(pemStr)
 	block, _ := pem.Decode([]byte(pemStr))
@@ -125,16 +131,10 @@ func PrivateKeyToPEM(key interface{}) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		block = &pem.Block{
-			Type:  "EC PRIVATE KEY",
-			Bytes: b,
-		}
+		block = &pem.Block{Type: "EC PRIVATE KEY", Bytes: b}
 	case *rsa.PrivateKey:
 		b := x509.MarshalPKCS1PrivateKey(k)
-		block = &pem.Block{
-			Type:  "RSA PRIVATE KEY",
-			Bytes: b,
-		}
+		block = &pem.Block{Type: "RSA PRIVATE KEY", Bytes: b}
 	default:
 		return "", errors.New("不支持的私钥类型")
 	}
@@ -153,10 +153,7 @@ func ParseCertificate(pemStr string) (*x509.Certificate, error) {
 
 // CertificateToPEM 将证书转换为 PEM 格式字符串
 func CertificateToPEM(cert *x509.Certificate) (string, error) {
-	block := &pem.Block{
-		Type:  "CERTIFICATE",
-		Bytes: cert.Raw,
-	}
+	block := &pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw}
 	return string(pem.EncodeToMemory(block)), nil
 }
 
@@ -164,7 +161,7 @@ func CertificateToPEM(cert *x509.Certificate) (string, error) {
 // parentCert 与 parentKey 为签发者信息，subject 为证书主题
 
 // GenerateSubordinateCertificateECDSA 生成下一级证书及密钥，ECDSA版本
-func GenerateSubordinateCertificateECDSA(parentCert *x509.Certificate, parentKey interface{}, subject string) (certPEM string, keyPEM string, err error) {
+func GenerateSubordinateCertificateECDSA(parentCert *x509.Certificate, parentKey interface{}, subject string) (string, string, error) {
 	newKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return "", "", err
@@ -174,10 +171,8 @@ func GenerateSubordinateCertificateECDSA(parentCert *x509.Certificate, parentKey
 		return "", "", err
 	}
 	template := &x509.Certificate{
-		SerialNumber: serial,
-		Subject: pkix.Name{
-			CommonName: subject,
-		},
+		SerialNumber:          serial,
+		Subject:               pkix.Name{CommonName: subject},
 		NotBefore:             time.Now(),
 		NotAfter:              time.Now().AddDate(1, 0, 0),
 		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
@@ -189,23 +184,16 @@ func GenerateSubordinateCertificateECDSA(parentCert *x509.Certificate, parentKey
 	if err != nil {
 		return "", "", err
 	}
-	certBlock := pem.EncodeToMemory(&pem.Block{
-		Type:  "CERTIFICATE",
-		Bytes: derBytes,
-	})
+	certPEM := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: derBytes}))
 	keyBytes, err := x509.MarshalECPrivateKey(newKey)
 	if err != nil {
 		return "", "", err
 	}
-	keyBlock := pem.EncodeToMemory(&pem.Block{
-		Type:  "EC PRIVATE KEY",
-		Bytes: keyBytes,
-	})
-	return string(certBlock), string(keyBlock), nil
+	keyPEM := string(pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyBytes}))
+	return certPEM, keyPEM, nil
 }
 
-// GenerateSubordinateCertificateRSA 生成下一级证书及密钥，RSA版本
-func GenerateSubordinateCertificateRSA(parentCert *x509.Certificate, parentKey interface{}, subject string) (certPEM string, keyPEM string, err error) {
+func GenerateSubordinateCertificateRSA(parentCert *x509.Certificate, parentKey interface{}, subject string) (string, string, error) {
 	newKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		return "", "", err
@@ -215,10 +203,8 @@ func GenerateSubordinateCertificateRSA(parentCert *x509.Certificate, parentKey i
 		return "", "", err
 	}
 	template := &x509.Certificate{
-		SerialNumber: serial,
-		Subject: pkix.Name{
-			CommonName: subject,
-		},
+		SerialNumber:          serial,
+		Subject:               pkix.Name{CommonName: subject},
 		NotBefore:             time.Now(),
 		NotAfter:              time.Now().AddDate(1, 0, 0),
 		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
@@ -230,21 +216,15 @@ func GenerateSubordinateCertificateRSA(parentCert *x509.Certificate, parentKey i
 	if err != nil {
 		return "", "", err
 	}
-	certBlock := pem.EncodeToMemory(&pem.Block{
-		Type:  "CERTIFICATE",
-		Bytes: derBytes,
-	})
+	certPEM := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: derBytes}))
 	keyBytes := x509.MarshalPKCS1PrivateKey(newKey)
-	keyBlock := pem.EncodeToMemory(&pem.Block{
-		Type:  "RSA PRIVATE KEY",
-		Bytes: keyBytes,
-	})
-	return string(certBlock), string(keyBlock), nil
+	keyPEM := string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: keyBytes}))
+	return certPEM, keyPEM, nil
 }
 
 // GenerateSelfSignedCACertificateECDSA 从头生成自签 CA 证书及私钥，ECDSA版本
-func GenerateSelfSignedCACertificateECDSA(subject string) (certPEM string, keyPEM string, caCert *x509.Certificate, caKey interface{}, err error) {
-	caKeyECDSA, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+func GenerateSelfSignedCACertificateECDSA(subject string) (string, string, *x509.Certificate, interface{}, error) {
+	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return "", "", nil, nil, err
 	}
@@ -253,42 +233,33 @@ func GenerateSelfSignedCACertificateECDSA(subject string) (certPEM string, keyPE
 		return "", "", nil, nil, err
 	}
 	template := &x509.Certificate{
-		SerialNumber: serial,
-		Subject: pkix.Name{
-			CommonName: subject,
-		},
+		SerialNumber:          serial,
+		Subject:               pkix.Name{CommonName: subject},
 		NotBefore:             time.Now(),
 		NotAfter:              time.Now().AddDate(5, 0, 0),
 		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
 		BasicConstraintsValid: true,
 		IsCA:                  true,
 	}
-	derBytes, err := x509.CreateCertificate(rand.Reader, template, template, &caKeyECDSA.PublicKey, caKeyECDSA)
+	derBytes, err := x509.CreateCertificate(rand.Reader, template, template, &caKey.PublicKey, caKey)
 	if err != nil {
 		return "", "", nil, nil, err
 	}
-	certBlock := pem.EncodeToMemory(&pem.Block{
-		Type:  "CERTIFICATE",
-		Bytes: derBytes,
-	})
-	keyBytes, err := x509.MarshalECPrivateKey(caKeyECDSA)
+	certPEM := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: derBytes}))
+	keyBytes, err := x509.MarshalECPrivateKey(caKey)
 	if err != nil {
 		return "", "", nil, nil, err
 	}
-	keyBlock := pem.EncodeToMemory(&pem.Block{
-		Type:  "EC PRIVATE KEY",
-		Bytes: keyBytes,
-	})
-	caCert, err = x509.ParseCertificate(derBytes)
+	keyPEM := string(pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyBytes}))
+	caCert, err := x509.ParseCertificate(derBytes)
 	if err != nil {
 		return "", "", nil, nil, err
 	}
-	return string(certBlock), string(keyBlock), caCert, caKeyECDSA, nil
+	return certPEM, keyPEM, caCert, caKey, nil
 }
 
-// GenerateSelfSignedCACertificateRSA 从头生成自签 CA 证书及私钥，RSA版本
-func GenerateSelfSignedCACertificateRSA(subject string) (certPEM string, keyPEM string, caCert *x509.Certificate, caKey interface{}, err error) {
-	caKeyRSA, err := rsa.GenerateKey(rand.Reader, 2048)
+func GenerateSelfSignedCACertificateRSA(subject string) (string, string, *x509.Certificate, interface{}, error) {
+	caKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		return "", "", nil, nil, err
 	}
@@ -297,39 +268,30 @@ func GenerateSelfSignedCACertificateRSA(subject string) (certPEM string, keyPEM 
 		return "", "", nil, nil, err
 	}
 	template := &x509.Certificate{
-		SerialNumber: serial,
-		Subject: pkix.Name{
-			CommonName: subject,
-		},
+		SerialNumber:          serial,
+		Subject:               pkix.Name{CommonName: subject},
 		NotBefore:             time.Now(),
 		NotAfter:              time.Now().AddDate(5, 0, 0),
 		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
 		BasicConstraintsValid: true,
 		IsCA:                  true,
 	}
-	derBytes, err := x509.CreateCertificate(rand.Reader, template, template, &caKeyRSA.PublicKey, caKeyRSA)
+	derBytes, err := x509.CreateCertificate(rand.Reader, template, template, &caKey.PublicKey, caKey)
 	if err != nil {
 		return "", "", nil, nil, err
 	}
-	certBlock := pem.EncodeToMemory(&pem.Block{
-		Type:  "CERTIFICATE",
-		Bytes: derBytes,
-	})
-	keyBytes := x509.MarshalPKCS1PrivateKey(caKeyRSA)
-	keyBlock := pem.EncodeToMemory(&pem.Block{
-		Type:  "RSA PRIVATE KEY",
-		Bytes: keyBytes,
-	})
-	caCert, err = x509.ParseCertificate(derBytes)
+	certPEM := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: derBytes}))
+	keyBytes := x509.MarshalPKCS1PrivateKey(caKey)
+	keyPEM := string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: keyBytes}))
+	caCert, err := x509.ParseCertificate(derBytes)
 	if err != nil {
 		return "", "", nil, nil, err
 	}
-	return string(certBlock), string(keyBlock), caCert, caKeyRSA, nil
+	return certPEM, keyPEM, caCert, caKey, nil
 }
 
-// ----------------------- 证书链验证 -----------------------
+// ----------------------- 证书链与密钥对验证 -----------------------
 
-// VerifyCertificateChain 验证证书链的完整性和有效性
 func VerifyCertificateChain(certPEMs []string) error {
 	certs := make([]*x509.Certificate, len(certPEMs))
 	for i, pemStr := range certPEMs {
@@ -339,7 +301,6 @@ func VerifyCertificateChain(certPEMs []string) error {
 		}
 		certs[i] = cert
 	}
-
 	brokenLinks := 0
 	for i := 0; i < len(certs)-1; i++ {
 		cert := certs[i]
@@ -366,11 +327,9 @@ func VerifyCertificateChain(certPEMs []string) error {
 			fmt.Printf("[成功] 证书 %d 由证书 %d 成功验证\n", i, i+1)
 		}
 	}
-
 	if brokenLinks > 0 {
 		return fmt.Errorf("证书链中发现 %d 处破坏", brokenLinks)
 	}
-
 	fmt.Println("证书链验证成功")
 	return nil
 }
@@ -381,12 +340,10 @@ func VerifyKeyCertificatePair(certPEM, privateKeyPEM string) error {
 	if err != nil {
 		return fmt.Errorf("解析证书失败: %v", err)
 	}
-
 	privateKey, err := ParsePrivateKey(privateKeyPEM)
 	if err != nil {
 		return fmt.Errorf("解析私钥失败: %v", err)
 	}
-
 	switch key := privateKey.(type) {
 	case *ecdsa.PrivateKey:
 		if !key.PublicKey.Equal(cert.PublicKey) {
@@ -399,285 +356,472 @@ func VerifyKeyCertificatePair(certPEM, privateKeyPEM string) error {
 	default:
 		return errors.New("不支持的私钥类型")
 	}
-
 	fmt.Println("[成功] 证书和密钥匹配")
 	return nil
 }
 
-// ----------------------- 菜单操作与主流程 -----------------------
+// ----------------------- 应用封装 -----------------------
 
-var (
-	// 全局变量：当前 Attestation 数据、CA 证书及私钥
+type App struct {
 	attestation *AndroidAttestation
 	caCert      *x509.Certificate
 	caKey       interface{}
-)
+	reader      *bufio.Reader
+}
 
-func main() {
-	reader := bufio.NewReader(os.Stdin)
+func NewApp() *App {
+	return &App{
+		reader: bufio.NewReader(os.Stdin),
+	}
+}
+
+func (app *App) RunInteractive() {
 	for {
-		fmt.Println("====== Android Attestation Keybox Generator ======")
-		fmt.Println("1. 从 keybox.xml 导入（现有证书链+密钥）")
-		fmt.Println("2. 导入已有 CA 证书及私钥")
-		fmt.Println("3. 从头开始生成（现场生成 CA）")
-		fmt.Println("4. 生成下一级证书+密钥 (可重复执行)")
-		fmt.Println("5. 查看当前 Attestation 信息")
-		fmt.Println("6. 保存到 keybox.xml 并退出")
-		fmt.Println("7. 验证证书链和密钥对")
-		fmt.Print("请输入选项：")
-		choice, _ := reader.ReadString('\n')
-		choice = strings.TrimSpace(choice)
-
+		app.showMenu()
+		choice, err := readLine("请输入选项：", app.reader)
+		if err != nil {
+			fmt.Println("读取输入错误：", err)
+			continue
+		}
 		switch choice {
 		case "1":
-			fmt.Print("请输入 keybox.xml 文件路径：")
-			file, _ := reader.ReadString('\n')
-			file = strings.TrimSpace(file)
-			a, err := LoadAttestationFromFile(file)
-			if err != nil {
-				fmt.Println("加载 XML 失败：", err)
-			} else {
-				attestation = a
-				fmt.Println("成功加载 keybox.xml！")
-			}
+			app.importAttestation()
 		case "2":
-			fmt.Print("请输入 CA 证书文件路径（PEM 格式）：")
-			certFile, _ := reader.ReadString('\n')
-			certFile = strings.TrimSpace(certFile)
-			fmt.Print("请输入 CA 私钥文件路径（PEM 格式）：")
-			keyFile, _ := reader.ReadString('\n')
-			keyFile = strings.TrimSpace(keyFile)
-			caCertData, err := os.ReadFile(certFile)
-			if err != nil {
-				fmt.Println("读取 CA 证书文件错误：", err)
-				break
-			}
-			caCertParsed, err := ParseCertificate(string(caCertData))
-			if err != nil {
-				fmt.Println("解析 CA 证书失败：", err)
-				break
-			}
-			caKeyData, err := os.ReadFile(keyFile)
-			if err != nil {
-				fmt.Println("读取 CA 私钥文件错误：", err)
-				break
-			}
-			caKeyParsed, err := ParsePrivateKey(string(caKeyData))
-			if err != nil {
-				fmt.Println("解析 CA 私钥失败：", err)
-				break
-			}
-			caCert = caCertParsed
-			caKey = caKeyParsed
-			keyPEM, err := PrivateKeyToPEM(caKey)
-			if err != nil {
-				fmt.Println("转换 CA 密钥为 PEM 失败：", err)
-				break
-			}
-			certPEM, err := CertificateToPEM(caCert)
-			if err != nil {
-				fmt.Println("转换 CA 证书/密钥为 PEM 失败：", err)
-				break
-			}
-			fmt.Println("成功导入 CA 证书及私钥")
-			attestation = &AndroidAttestation{
-				Keyboxes: []Keybox{
+			app.importCA()
+		case "3":
+			app.generateCA()
+		case "4":
+			app.generateSubCert()
+		case "5":
+			app.showAttestation()
+		case "6":
+			app.saveAndExit()
+		case "7":
+			app.verifyAll()
+		default:
+			fmt.Println("无效选项，请重新输入")
+		}
+	}
+}
+
+func (app *App) showMenu() {
+	fmt.Println("====== Android Attestation Keybox Generator ======")
+	fmt.Println("1. 从 keybox.xml 导入（现有证书链+密钥）")
+	fmt.Println("2. 导入已有 CA 证书及私钥")
+	fmt.Println("3. 从头开始生成 CA")
+	fmt.Println("4. 生成下一级证书+密钥 (可重复执行)")
+	fmt.Println("5. 查看当前 Attestation 信息")
+	fmt.Println("6. 保存到 keybox.xml 并退出")
+	fmt.Println("7. 验证证书链和密钥对")
+}
+
+func (app *App) importAttestation() {
+	file, err := readLine("请输入 keybox.xml 文件路径：", app.reader)
+	if err != nil {
+		fmt.Println("读取文件路径错误：", err)
+		return
+	}
+	a, err := LoadAttestationFromFile(file)
+	if err != nil {
+		fmt.Println("加载 XML 失败：", err)
+	} else {
+		app.attestation = a
+		fmt.Println("成功加载 keybox.xml！")
+	}
+}
+
+func (app *App) importCA() {
+	certFile, err := readLine("请输入 CA 证书文件路径（PEM 格式）：", app.reader)
+	if err != nil {
+		fmt.Println("读取错误：", err)
+		return
+	}
+	keyFile, err := readLine("请输入 CA 私钥文件路径（PEM 格式）：", app.reader)
+	if err != nil {
+		fmt.Println("读取错误：", err)
+		return
+	}
+	caCertData, err := os.ReadFile(certFile)
+	if err != nil {
+		fmt.Println("读取 CA 证书文件错误：", err)
+		return
+	}
+	caCertParsed, err := ParseCertificate(string(caCertData))
+	if err != nil {
+		fmt.Println("解析 CA 证书失败：", err)
+		return
+	}
+	caKeyData, err := os.ReadFile(keyFile)
+	if err != nil {
+		fmt.Println("读取 CA 私钥文件错误：", err)
+		return
+	}
+	caKeyParsed, err := ParsePrivateKey(string(caKeyData))
+	if err != nil {
+		fmt.Println("解析 CA 私钥失败：", err)
+		return
+	}
+	app.caCert = caCertParsed
+	app.caKey = caKeyParsed
+	// 构造新的 Attestation 数据
+	keyPEM, _ := PrivateKeyToPEM(app.caKey)
+	certPEM, _ := CertificateToPEM(app.caCert)
+	app.attestation = &AndroidAttestation{
+		Keyboxes: []Keybox{
+			{
+				DeviceID: "",
+				Keys: []Key{
 					{
-						DeviceID: "",
-						Keys: []Key{
-							{
-								Algorithm: "ecdsa",
-								PrivateKey: PEMBlock{
-									Format: "pem",
-									Value:  keyPEM,
-								},
-								CertificateChain: &CertificateChain{
-									NumberOfCertificates: 1,
-									Certificates: []PEMBlock{
-										{
-											Format: "pem",
-											Value:  certPEM,
-										},
-									},
+						Algorithm:  "ecdsa",
+						PrivateKey: PEMBlock{Format: "pem", Value: keyPEM},
+						CertificateChain: &CertificateChain{
+							NumberOfCertificates: 1,
+							Certificates: []PEMBlock{
+								{Format: "pem", Value: certPEM},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	fmt.Println("成功导入 CA 证书及私钥，并构造新的 Attestation 数据")
+}
+
+func (app *App) generateCA() {
+	subject, err := readLine("请输入 Subject: ", app.reader)
+	if err != nil {
+		fmt.Println("读取错误：", err)
+		return
+	}
+	caType, err := readLine("请选择根 CA 类型 (ecdsa/rsa): ", app.reader)
+	if err != nil {
+		fmt.Println("读取错误：", err)
+		return
+	}
+	caType = strings.ToLower(caType)
+	var (
+		certPEM, keyPEM string
+		newCACert       *x509.Certificate
+		newCAKey        interface{}
+	)
+	switch caType {
+	case "rsa":
+		certPEM, keyPEM, newCACert, newCAKey, err = GenerateSelfSignedCACertificateRSA(subject)
+	default:
+		certPEM, keyPEM, newCACert, newCAKey, err = GenerateSelfSignedCACertificateECDSA(subject)
+		caType = "ecdsa"
+	}
+	if err != nil {
+		fmt.Printf("生成 %s CA 失败: %v\n", strings.ToUpper(caType), err)
+		return
+	}
+	app.caCert = newCACert
+	app.caKey = newCAKey
+	fmt.Printf("成功生成 %s CA 证书及私钥\n", strings.ToUpper(caType))
+	// 如果尚未构造 attestation，则构造之
+	if app.attestation == nil {
+		app.attestation = &AndroidAttestation{
+			Keyboxes: []Keybox{
+				{
+					DeviceID: "",
+					Keys: []Key{
+						{
+							Algorithm:  caType,
+							PrivateKey: PEMBlock{Format: "pem", Value: keyPEM},
+							CertificateChain: &CertificateChain{
+								NumberOfCertificates: 1,
+								Certificates: []PEMBlock{
+									{Format: "pem", Value: certPEM},
 								},
 							},
 						},
 					},
 				},
+			},
+		}
+	}
+}
+
+func (app *App) generateSubCert() {
+	if app.attestation == nil {
+		fmt.Println("请先加载/生成 Attestation 数据！")
+		return
+	}
+	for kbIndex, kb := range app.attestation.Keyboxes {
+		for keyIndex, key := range kb.Keys {
+			if key.CertificateChain == nil || len(key.CertificateChain.Certificates) == 0 {
+				fmt.Printf("Keybox %d Key %d: 无证书链，无法生成下一级证书\n", kbIndex, keyIndex)
+				continue
 			}
-			fmt.Println("构造新的 Attestation 成功")
-		case "3":
-			// 从头开始生成 CA，不论 attestation 是否已存在，都仅构造一次 CA 信息
-			fmt.Print("请输入 Subject: ")
-			subject, _ := reader.ReadString('\n')
-			subject = strings.TrimSpace(subject)
-			fmt.Print("请选择根 CA 类型 (ecdsa/rsa): ")
-			caType, _ := reader.ReadString('\n')
-			caType = strings.TrimSpace(strings.ToLower(caType))
-			var (
-				certPEM, keyPEM string
-				newCACert       *x509.Certificate
-				newCAKey        interface{}
-				err             error
-			)
-			switch caType {
-			case "rsa":
-				certPEM, keyPEM, newCACert, newCAKey, err = GenerateSelfSignedCACertificateRSA(subject)
-			case "ecdsa":
-				fallthrough
-			default:
-				certPEM, keyPEM, newCACert, newCAKey, err = GenerateSelfSignedCACertificateECDSA(subject)
-				caType = "ecdsa"
+			parentCertPEM := key.CertificateChain.Certificates[0].Value
+			parentCert, err := ParseCertificate(parentCertPEM)
+			if err != nil {
+				fmt.Printf("Keybox %d Key %d: 解析父证书失败: %v\n", kbIndex, keyIndex, err)
+				continue
+			}
+			parentKey, err := ParsePrivateKey(key.PrivateKey.Value)
+			if err != nil {
+				fmt.Printf("Keybox %d Key %d: 解析私钥失败: %v\n", kbIndex, keyIndex, err)
+				continue
+			}
+			fmt.Printf("当前 Key 的算法为: %s\n", key.Algorithm)
+			subject, err := readLine("请输入 Subject: ", app.reader)
+			if err != nil {
+				fmt.Println("读取错误：", err)
+				continue
+			}
+			subAlg, err := readLine("请选择下一级证书算法 (ecdsa/rsa): ", app.reader)
+			if err != nil {
+				fmt.Println("读取错误：", err)
+				continue
+			}
+			subAlg = strings.ToLower(subAlg)
+			var newCertPEM, newKeyPEM string
+			if subAlg == "rsa" {
+				newCertPEM, newKeyPEM, err = GenerateSubordinateCertificateRSA(parentCert, parentKey, subject)
+			} else {
+				newCertPEM, newKeyPEM, err = GenerateSubordinateCertificateECDSA(parentCert, parentKey, subject)
+				subAlg = "ecdsa"
 			}
 			if err != nil {
-				fmt.Printf("生成 %s CA 失败: %v\n", strings.ToUpper(caType), err)
-				break
+				fmt.Printf("Keybox %d Key %d: 生成下一级证书失败: %v\n", kbIndex, keyIndex, err)
+				continue
 			}
-			caCert = newCACert
-			caKey = newCAKey
-			fmt.Printf("成功生成 %s CA 证书及私钥\n", strings.ToUpper(caType))
-			// 如果 attestation 还未构造，则构造一个默认的 attestation
-			if attestation == nil {
-				attestation = &AndroidAttestation{
-					Keyboxes: []Keybox{
+			// 将新生成的证书链追加到前面
+			key.CertificateChain.Certificates = append([]PEMBlock{{Format: "pem", Value: newCertPEM}}, key.CertificateChain.Certificates...)
+			key.CertificateChain.NumberOfCertificates = len(key.CertificateChain.Certificates)
+			key.PrivateKey.Value = newKeyPEM
+			key.Algorithm = subAlg
+			app.attestation.Keyboxes[kbIndex].Keys[keyIndex] = key
+			fmt.Printf("Keybox %d Key %d: 成功生成下一级证书\n", kbIndex, keyIndex)
+		}
+	}
+}
+
+func (app *App) showAttestation() {
+	if app.attestation == nil {
+		fmt.Println("当前无 Attestation 数据")
+		return
+	}
+	data, _ := xml.MarshalIndent(app.attestation, "", "  ")
+	fmt.Println("当前 Attestation 信息：")
+	fmt.Println(string(data))
+}
+
+func (app *App) saveAndExit() {
+	outfile, err := readLine("请输入保存的 keybox.xml 文件路径：", app.reader)
+	if err != nil {
+		fmt.Println("读取文件路径错误：", err)
+		return
+	}
+	if app.attestation == nil {
+		fmt.Println("无 Attestation 数据可保存")
+		os.Exit(1)
+	}
+	// 若存在空的 DeviceID 则提示填写
+	for i, kb := range app.attestation.Keyboxes {
+		if kb.DeviceID == "" {
+			deviceID, _ := readLine(fmt.Sprintf("Keybox %d: DeviceID 为空，请输入 DeviceID:\n", i), app.reader)
+			app.attestation.Keyboxes[i].DeviceID = deviceID
+		}
+	}
+	if err := app.attestation.SaveToFile(outfile); err != nil {
+		fmt.Println("保存 XML 失败：", err)
+	} else {
+		fmt.Println("成功保存到", outfile)
+	}
+	os.Exit(0)
+}
+
+func (app *App) verifyAll() {
+	if app.attestation == nil {
+		fmt.Println("请先加载/生成 Attestation 数据！")
+		return
+	}
+	for _, kb := range app.attestation.Keyboxes {
+		for _, key := range kb.Keys {
+			if key.CertificateChain != nil && len(key.CertificateChain.Certificates) > 0 {
+				certPEMs := make([]string, len(key.CertificateChain.Certificates))
+				for i, cert := range key.CertificateChain.Certificates {
+					certPEMs[i] = cert.Value
+				}
+				if err := VerifyCertificateChain(certPEMs); err != nil {
+					fmt.Printf("验证证书链失败: %v\n", err)
+				}
+				if key.PrivateKey.Value != "" {
+					if err := VerifyKeyCertificatePair(certPEMs[0], key.PrivateKey.Value); err != nil {
+						fmt.Printf("验证密钥对失败: %v\n", err)
+					}
+				}
+			}
+		}
+	}
+}
+
+// ----------------------- 命令行参数处理 -----------------------
+
+func printUsage() {
+	usage := `用法:
+  若不带参数则进入交互模式，交互式输入指令；
+  也可使用以下纯指令参数：
+    -importAttestation 文件路径      从指定 XML 文件导入 Attestation 数据
+    -importCA certFile keyFile        导入 CA 证书及私钥（PEM 格式）
+    -generateCA subject caType        根据 subject 生成自签 CA (caType: ecdsa 或 rsa)
+    -generateSubCert                生成下一级证书（需先导入或生成 Attestation）
+    -showAttestation                显示当前 Attestation 信息
+    -save outfile                   保存 Attestation 数据到 outfile 并退出
+    -verify                       验证证书链和密钥对
+`
+	fmt.Println(usage)
+}
+
+func main() {
+	// 定义命令行参数，若参数存在则执行相应操作，否则进入交互模式
+	importAttestationPath := flag.String("importAttestation", "", "从指定 XML 文件导入 Attestation 数据")
+	importCACert := flag.String("importCACert", "", "导入 CA 证书文件路径（PEM 格式）")
+	importCAKey := flag.String("importCAKey", "", "导入 CA 私钥文件路径（PEM 格式）")
+	generateCASubject := flag.String("generateCA", "", "根据 subject 生成自签 CA，参数格式：subject:caType (caType 可选 ecdsa/rsa，默认为 ecdsa)")
+	generateSubCert := flag.Bool("generateSubCert", false, "生成下一级证书")
+	showAttestation := flag.Bool("showAttestation", false, "显示当前 Attestation 信息")
+	saveFile := flag.String("save", "", "保存 Attestation 数据到 outfile 并退出")
+	verifyFlag := flag.Bool("verify", false, "验证证书链和密钥对")
+	helpFlag := flag.Bool("help", false, "显示帮助")
+	flag.Parse()
+
+	app := NewApp()
+
+	if *helpFlag {
+		printUsage()
+		return
+	}
+
+	// 若存在命令行参数，则按参数执行（非交互模式）
+	switch {
+	case *importAttestationPath != "":
+		a, err := LoadAttestationFromFile(*importAttestationPath)
+		if err != nil {
+			fmt.Println("加载 XML 失败：", err)
+			return
+		}
+		app.attestation = a
+		fmt.Println("成功加载 Attestation 数据")
+	case *importCACert != "" && *importCAKey != "":
+		caCertData, err := os.ReadFile(*importCACert)
+		if err != nil {
+			fmt.Println("读取 CA 证书文件错误：", err)
+			return
+		}
+		caCertParsed, err := ParseCertificate(string(caCertData))
+		if err != nil {
+			fmt.Println("解析 CA 证书失败：", err)
+			return
+		}
+		caKeyData, err := os.ReadFile(*importCAKey)
+		if err != nil {
+			fmt.Println("读取 CA 私钥文件错误：", err)
+			return
+		}
+		caKeyParsed, err := ParsePrivateKey(string(caKeyData))
+		if err != nil {
+			fmt.Println("解析 CA 私钥失败：", err)
+			return
+		}
+		app.caCert = caCertParsed
+		app.caKey = caKeyParsed
+		keyPEM, _ := PrivateKeyToPEM(app.caKey)
+		certPEM, _ := CertificateToPEM(app.caCert)
+		app.attestation = &AndroidAttestation{
+			Keyboxes: []Keybox{
+				{
+					DeviceID: "",
+					Keys: []Key{
 						{
-							DeviceID: "",
-							Keys: []Key{
-								{
-									Algorithm: caType,
-									PrivateKey: PEMBlock{
-										Format: "pem",
-										Value:  keyPEM,
-									},
-									CertificateChain: &CertificateChain{
-										NumberOfCertificates: 1,
-										Certificates: []PEMBlock{
-											{
-												Format: "pem",
-												Value:  certPEM,
-											},
-										},
-									},
+							Algorithm:  "ecdsa",
+							PrivateKey: PEMBlock{Format: "pem", Value: keyPEM},
+							CertificateChain: &CertificateChain{
+								NumberOfCertificates: 1,
+								Certificates: []PEMBlock{
+									{Format: "pem", Value: certPEM},
 								},
 							},
 						},
 					},
-				}
-			}
-			fmt.Println("构造 CA 信息成功")
-		case "4":
-			if attestation == nil {
-				fmt.Println("请先加载/生成 Attestation 数据！")
-				break
-			}
-			// 遍历每个 Keybox、每个 Key，生成下一级证书+密钥
-			for i, kb := range attestation.Keyboxes {
-				for j, key := range kb.Keys {
-					if key.CertificateChain != nil && len(key.CertificateChain.Certificates) > 0 {
-						// 取当前 Key 的证书链中第一个证书作为父证书
-						parentCertPEM := key.CertificateChain.Certificates[0].Value
-						parentCert, err := ParseCertificate(parentCertPEM)
-						if err != nil {
-							fmt.Printf("Keybox %d Key %d: 解析父证书失败: %v\n", i, j, err)
-							continue
-						}
-						parentKey, err := ParsePrivateKey(key.PrivateKey.Value)
-						if err != nil {
-							fmt.Printf("Keybox %d Key %d: 解析私钥失败: %v\n", i, j, err)
-							continue
-						}
-						signerCert := parentCert
-						signerKey := parentKey
-						fmt.Printf("当前 Key 的算法为: %s\n", key.Algorithm)
-						fmt.Print("请输入 Subject: ")
-						subject, _ := reader.ReadString('\n')
-						subject = strings.TrimSpace(subject)
-						fmt.Print("请选择下一级证书算法 (ecdsa/rsa): ")
-						subAlg, _ := reader.ReadString('\n')
-						subAlg = strings.TrimSpace(strings.ToLower(subAlg))
-						var newCertPEM, newKeyPEM string
-						if subAlg == "rsa" {
-							newCertPEM, newKeyPEM, err = GenerateSubordinateCertificateRSA(signerCert, signerKey, subject)
-						} else {
-							newCertPEM, newKeyPEM, err = GenerateSubordinateCertificateECDSA(signerCert, signerKey, subject)
-							subAlg = "ecdsa"
-						}
-						if err != nil {
-							fmt.Printf("Keybox %d Key %d: 生成下一级证书失败: %v\n", i, j, err)
-							continue
-						}
-						key.CertificateChain.Certificates = append([]PEMBlock{{
-							Format: "pem",
-							Value:  newCertPEM,
-						}}, key.CertificateChain.Certificates...)
-						key.CertificateChain.NumberOfCertificates = len(key.CertificateChain.Certificates)
-						key.PrivateKey.Value = newKeyPEM
-						key.Algorithm = subAlg
-						attestation.Keyboxes[i].Keys[j] = key
-						fmt.Printf("Keybox %d Key %d: 成功生成下一级证书\n", i, j)
-					} else {
-						fmt.Printf("Keybox %d Key %d: 无证书链，无法生成下一级证书\n", i, j)
-					}
-				}
-			}
-		case "5":
-			if attestation == nil {
-				fmt.Println("当前无 Attestation 数据")
-			} else {
-				data, _ := xml.MarshalIndent(attestation, "", "  ")
-				fmt.Println("当前 Attestation 信息：")
-				fmt.Println(string(data))
-			}
-		case "6":
-			fmt.Print("请输入保存的 keybox.xml 文件路径：")
-			outfile, _ := reader.ReadString('\n')
-			outfile = strings.TrimSpace(outfile)
-			if attestation == nil {
-				fmt.Println("无 Attestation 数据可保存")
-				os.Exit(1)
-			}
-			for i, kb := range attestation.Keyboxes {
-				if kb.DeviceID == "" {
-					fmt.Printf("Keybox %d: DeviceID 为空，请输入 DeviceID:\n", i)
-					deviceID, _ := reader.ReadString('\n')
-					deviceID = strings.TrimSpace(deviceID)
-					attestation.Keyboxes[i].DeviceID = deviceID
-				}
-			}
-			err := attestation.SaveToFile(outfile)
-			if err != nil {
-				fmt.Println("保存 XML 失败：", err)
-			} else {
-				fmt.Println("成功保存到", outfile)
-			}
-			os.Exit(0)
-		case "7":
-			if attestation == nil {
-				fmt.Println("请先加载/生成 Attestation 数据！")
-				break
-			}
-			for _, kb := range attestation.Keyboxes {
-				for _, key := range kb.Keys {
-					if key.CertificateChain != nil && len(key.CertificateChain.Certificates) > 0 {
-						certPEMs := make([]string, len(key.CertificateChain.Certificates))
-						for i, cert := range key.CertificateChain.Certificates {
-							certPEMs[i] = cert.Value
-						}
-						err := VerifyCertificateChain(certPEMs)
-						if err != nil {
-							fmt.Printf("验证证书链失败: %v\n", err)
-						}
-						if key.PrivateKey.Value != "" {
-							err := VerifyKeyCertificatePair(certPEMs[0], key.PrivateKey.Value)
-							if err != nil {
-								fmt.Printf("验证密钥对失败: %v\n", err)
-							}
-						}
-					}
-				}
-			}
-		default:
-			fmt.Println("无效选项，请重新输入")
+				},
+			},
 		}
+		fmt.Println("成功导入 CA 数据")
+	case *generateCASubject != "":
+		parts := strings.Split(*generateCASubject, ":")
+		subject := parts[0]
+		caType := "ecdsa"
+		if len(parts) > 1 {
+			caType = strings.ToLower(parts[1])
+		}
+		var (
+			certPEM, keyPEM string
+			newCACert       *x509.Certificate
+			newCAKey        interface{}
+			err             error
+		)
+		if caType == "rsa" {
+			certPEM, keyPEM, newCACert, newCAKey, err = GenerateSelfSignedCACertificateRSA(subject)
+		} else {
+			certPEM, keyPEM, newCACert, newCAKey, err = GenerateSelfSignedCACertificateECDSA(subject)
+		}
+		if err != nil {
+			fmt.Printf("生成 %s CA 失败: %v\n", strings.ToUpper(caType), err)
+			return
+		}
+		app.caCert = newCACert
+		app.caKey = newCAKey
+		app.attestation = &AndroidAttestation{
+			Keyboxes: []Keybox{
+				{
+					DeviceID: "",
+					Keys: []Key{
+						{
+							Algorithm:  caType,
+							PrivateKey: PEMBlock{Format: "pem", Value: keyPEM},
+							CertificateChain: &CertificateChain{
+								NumberOfCertificates: 1,
+								Certificates: []PEMBlock{
+									{Format: "pem", Value: certPEM},
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+		fmt.Printf("成功生成 %s CA\n", strings.ToUpper(caType))
 	}
+
+	if *generateSubCert {
+		app.generateSubCert()
+	}
+
+	if *showAttestation {
+		app.showAttestation()
+	}
+
+	if *verifyFlag {
+		app.verifyAll()
+	}
+
+	if *saveFile != "" {
+		if app.attestation == nil {
+			fmt.Println("无 Attestation 数据可保存")
+			return
+		}
+		if err := app.attestation.SaveToFile(*saveFile); err != nil {
+			fmt.Println("保存 XML 失败：", err)
+		} else {
+			fmt.Println("成功保存到", *saveFile)
+		}
+		return
+	}
+
+	// 若无参数或部分参数未处理则进入交互模式
+	app.RunInteractive()
 }
