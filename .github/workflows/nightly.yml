@@ -1,6 +1,6 @@
 name: latest version
 
-on: [push, pull_request]
+on: [push, pull_request, workflow_dispatch]
 
 env:
   BINARY_PREFIX: "aakg_"
