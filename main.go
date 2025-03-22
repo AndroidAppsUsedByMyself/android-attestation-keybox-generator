@@ -171,17 +171,15 @@ func GenerateSubordinateCertificate(parentCert *x509.Certificate, parentKey inte
 	}
 }
 
-// GenerateSubordinateCertificateECDSA 生成下一级证书及密钥，ECDSA版本
-func GenerateSubordinateCertificateECDSA(parentCert *x509.Certificate, parentKey interface{}, subject string) (string, string, error) {
-	newKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		return "", "", err
-	}
-	serial, err := rand.Int(rand.Reader, big.NewInt(1000000))
-	if err != nil {
-		return "", "", err
-	}
-	template := &x509.Certificate{
+// generateSerial 生成一个安全的随机序列号
+func generateSerial() (*big.Int, error) {
+	max := new(big.Int).Lsh(big.NewInt(1), 128)
+	return rand.Int(rand.Reader, max)
+}
+
+// createCertTemplate 创建通用的证书模板
+func createCertTemplate(serial *big.Int, subject string) *x509.Certificate {
+	return &x509.Certificate{
 		SerialNumber:          serial,
 		Subject:               pkix.Name{CommonName: subject},
 		NotBefore:             time.Now(),
@@ -191,6 +189,22 @@ func GenerateSubordinateCertificateECDSA(parentCert *x509.Certificate, parentKey
 		BasicConstraintsValid: true,
 		IsCA:                  true,
 	}
+}
+
+// GenerateSubordinateCertificateECDSA ECDSA版本
+func GenerateSubordinateCertificateECDSA(parentCert *x509.Certificate, parentKey interface{}, subject string) (string, string, error) {
+	newKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return "", "", err
+	}
+
+	serial, err := generateSerial()
+	if err != nil {
+		return "", "", err
+	}
+
+	template := createCertTemplate(serial, subject)
+
 	derBytes, err := x509.CreateCertificate(rand.Reader, template, parentCert, &newKey.PublicKey, parentKey)
 	if err != nil {
 		return "", "", err
@@ -204,25 +218,17 @@ func GenerateSubordinateCertificateECDSA(parentCert *x509.Certificate, parentKey
 	return certPEM, keyPEM, nil
 }
 
+// GenerateSubordinateCertificateRSA RSA版本
 func GenerateSubordinateCertificateRSA(parentCert *x509.Certificate, parentKey interface{}, subject string) (string, string, error) {
 	newKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		return "", "", err
 	}
-	serial, err := rand.Int(rand.Reader, big.NewInt(1000000))
+	serial, err := generateSerial()
 	if err != nil {
 		return "", "", err
 	}
-	template := &x509.Certificate{
-		SerialNumber:          serial,
-		Subject:               pkix.Name{CommonName: subject},
-		NotBefore:             time.Now(),
-		NotAfter:              time.Now().AddDate(1, 0, 0),
-		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
-		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth},
-		BasicConstraintsValid: true,
-		IsCA:                  true,
-	}
+	template := createCertTemplate(serial, subject)
 	derBytes, err := x509.CreateCertificate(rand.Reader, template, parentCert, &newKey.PublicKey, parentKey)
 	if err != nil {
 		return "", "", err
