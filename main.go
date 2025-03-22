@@ -62,7 +62,7 @@ func (a *AndroidAttestation) SaveToFile(filename string) error {
 		return err
 	}
 	data = append([]byte(xml.Header), data...)
-	return os.WriteFile(filename, data, 0644)
+	return os.WriteFile(filename, data, 0o644)
 }
 
 func LoadAttestationFromFile(filename string) (*AndroidAttestation, error) {
