@@ -66,6 +66,12 @@
       <PrivateKey format="pem">
         {3}
       </PrivateKey>
+      <CertificateChain>
+        <NumberOfCertificates>1</NumberOfCertificates>
+        <Certificate format="pem">
+          {4}
+        </Certificate>
+      </CertificateChain>
     </Key>
   </Keybox>
 </AndroidAttestation>
