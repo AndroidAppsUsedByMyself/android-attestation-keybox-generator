@@ -5,6 +5,7 @@ on:
       - 'go.mod'
       - 'go.sum'
       - '.github/workflows/gomod2nix.yml'
+  workflow_dispatch:
 jobs:
   gomod2nix:
     name: gomod2nix update
