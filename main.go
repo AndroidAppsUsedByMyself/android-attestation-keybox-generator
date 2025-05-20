@@ -57,7 +57,7 @@ func (a *AndroidAttestation) SaveToFile(filename string) error {
 		return err
 	}
 	data = append([]byte(xml.Header), data...)
-	return os.WriteFile(filename, data, 0o644)
+	return os.WriteFile(filename, data, 0644)
 }
 
 func LoadAttestationFromFile(filename string) (*AndroidAttestation, error) {
@@ -362,15 +362,39 @@ type App struct {
 	caCert      *x509.Certificate
 	caKey       interface{}
 	reader      *bufio.Reader
+	tempDir     string
+	stepCounter int
 }
 
 func NewApp() *App {
+	tempDir, err := os.MkdirTemp("", "keybox_temp")
+	if err != nil {
+		fmt.Println("创建临时目录失败：", err)
+		os.Exit(1)
+	}
 	return &App{
-		reader: bufio.NewReader(os.Stdin),
+		reader:      bufio.NewReader(os.Stdin),
+		tempDir:     tempDir,
+		stepCounter: 0,
+	}
+}
+
+func (app *App) saveIntermediate() {
+	if app.attestation == nil {
+		return
+	}
+	app.stepCounter++
+	filename := filepath.Join(app.tempDir, fmt.Sprintf("keybox_step%d.xml", app.stepCounter))
+	if err := app.attestation.SaveToFile(filename); err != nil {
+		fmt.Println("保存中间文件失败：", err)
+	} else {
+		fmt.Println("保存中间文件到", filename)
 	}
 }
 
 func (app *App) RunInteractive() {
+	fmt.Println("临时目录：", app.tempDir)
+	fmt.Println("临时目录将保留，可手动删除")
 	for {
 		app.showMenu()
 		choice, err := readLine("请输入选项：", app.reader)
@@ -422,6 +446,7 @@ func (app *App) importAttestation() {
 	} else {
 		app.attestation = a
 		fmt.Println("成功加载 keybox.xml！")
+		app.saveIntermediate()
 	}
 }
 
@@ -439,6 +464,8 @@ func (app *App) importCA() {
 	err = app.importCANonInteractive(certFile, keyFile)
 	if err != nil {
 		fmt.Println("导入 CA 失败：", err)
+	} else {
+		app.saveIntermediate()
 	}
 }
 
@@ -456,6 +483,8 @@ func (app *App) generateCA() {
 	err = app.generateCANonInteractive(subject, caType)
 	if err != nil {
 		fmt.Println("生成 CA 失败：", err)
+	} else {
+		app.saveIntermediate()
 	}
 }
 
@@ -477,6 +506,8 @@ func (app *App) generateSubCert() {
 	err = app.generateSubCertNonInteractive(subject, subAlg)
 	if err != nil {
 		fmt.Println("生成子证书失败：", err)
+	} else {
+		app.saveIntermediate()
 	}
 }
 
@@ -511,6 +542,7 @@ func (app *App) saveAndExit() {
 	} else {
 		fmt.Println("成功保存到", outfile)
 	}
+	fmt.Println("临时目录保留，可手动删除：", app.tempDir)
 	os.Exit(0)
 }
 
@@ -694,14 +726,9 @@ func printUsage() {
 
 func processOperations(args []string) {
 	app := NewApp()
-	tempDir, err := os.MkdirTemp("", "keybox_temp")
-	if err != nil {
-		fmt.Println("创建临时目录失败：", err)
-		return
-	}
-	fmt.Println("临时目录：", tempDir)
+	fmt.Println("临时目录：", app.tempDir)
 	defer func() {
-		fmt.Println("临时目录保留，可手动删除：", tempDir)
+		fmt.Println("临时目录保留，可手动删除：", app.tempDir)
 	}()
 
 	step := 0
@@ -722,6 +749,7 @@ func processOperations(args []string) {
 			}
 			app.attestation = a
 			fmt.Println("成功加载 Attestation 数据")
+			app.saveIntermediate()
 			i += 2
 		case "-importCA":
 			if i+2 >= len(args) {
@@ -735,6 +763,7 @@ func processOperations(args []string) {
 				fmt.Println("导入 CA 失败：", err)
 				return
 			}
+			app.saveIntermediate()
 			i += 3
 		case "-generateCA":
 			if i+1 >= len(args) {
@@ -752,6 +781,7 @@ func processOperations(args []string) {
 				fmt.Println("生成 CA 失败：", err)
 				return
 			}
+			app.saveIntermediate()
 			i += 2
 		case "-generateSubCert":
 			if i+2 >= len(args) {
@@ -765,6 +795,7 @@ func processOperations(args []string) {
 				fmt.Println("生成子证书失败：", err)
 				return
 			}
+			app.saveIntermediate()
 			i += 3
 		case "-showAttestation":
 			app.showAttestation()
@@ -793,14 +824,6 @@ func processOperations(args []string) {
 			return
 		}
 		step++
-		if app.attestation != nil {
-			filename := filepath.Join(tempDir, fmt.Sprintf("keybox_step%d.xml", step))
-			if err := app.attestation.SaveToFile(filename); err != nil {
-				fmt.Println("保存中间文件失败：", err)
-			} else {
-				fmt.Println("保存中间文件到", filename)
-			}
-		}
 	}
 }
 
