@@ -705,8 +705,9 @@ func (app *App) generateSubCertNonInteractive(subject, algo string) error {
 // ----------------------- 命令行参数处理 -----------------------
 
 func printUsage() {
+	exeFile := filepath.Base(os.Args[0])
 	usage := `用法:
-  go run . -interactive                进入交互模式
+  %s -interactive                进入交互模式
   或使用以下非交互式命令（支持操作序列）：
     -importAttestation <file>          从指定 XML 文件导入 Attestation 数据
     -importCA <certFile> <keyFile>     导入 CA 证书及私钥（PEM 格式）
@@ -717,11 +718,11 @@ func printUsage() {
     -verify                            验证证书链和密钥对
 
 示例：
-  go run . -importAttestation keybox.xml.1 -generateSubCert mysubject ecdsa -showAttestation
-  go run . -importAttestation keybox.xml.1 -generateSubCert mysubject ecdsa -save keybox.xml.1
-  go run . -importAttestation keybox.xml.1 -generateSubCert mysubject ecdsa -generateSubCert mysubject2 ecdsa -save keybox.xml.1
+  %s -importAttestation keybox.xml.1 -generateSubCert mysubject ecdsa -showAttestation
+  %s -importAttestation keybox.xml.1 -generateSubCert mysubject ecdsa -save keybox.xml.1
+  %s -importAttestation keybox.xml.1 -generateSubCert mysubject ecdsa -generateSubCert mysubject2 ecdsa -save keybox.xml.1
 `
-	fmt.Println(usage)
+	fmt.Printf(usage, exeFile, exeFile, exeFile, exeFile)
 }
 
 func processOperations(args []string) {
